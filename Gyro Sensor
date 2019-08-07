@@ -5,8 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define GYROSCOPE_SENSITIVITY 250/32768
-typedef unsigned char byte;
+//#define GYROSCOPE_SENSITIVITY 250/32768    //어디에 쓰이는지?
 
 void getRawData();
 void getAcclDegree(void);
