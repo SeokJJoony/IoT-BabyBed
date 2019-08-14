@@ -1,0 +1,97 @@
+#include <stdlib.h>
+#include <delay.h>
+#include <mega128.h>
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+
+char bit_data[41]; //dht11 에서 수신되는 데이터가 총 start bit(1)+ data bit(40) 41byte
+volatile int DHT_cnt=0;
+int StDone=0;       //시작을 알리는 신호의 끝을 알리는 플래그
+int toggle=0;
+int time=0;
+int i=0;
+int humi=0;
+int temp=0;
+
+void timer_init1(void)
+{
+    TCCR1A = 0x00;
+    TCCR1B = 0x01;
+}    
+interrupt [TIM1_OVF] void timer_int1(void)
+{
+    TIMSK = 0x04;
+    EIMSK = 0x00;
+    StDone = 1;
+}
+
+interrupt [EXT_INT4] void external_int4(void)   //Atmega128보드에서 Start신호를 보낸 뒤 데이터를 구분해주는 인터럽
+{
+    if(toggle==0)\
+    {
+        TIMSK = 0x04;    // TOIE0 = '1';    
+        TCNT1 = 0;       // 타이머/카운터0 레지스터 초기값
+        EICRB = 0x03;    // ISC41=1, ISC40=0 -> 하강엣지시 인터럽트 작동(INT4)                                  트
+        toggle = 1;
+    } 
+    else if(toggle==1)
+    {
+        TIMSK = 0x04;    // TOIE0 = '1';    
+        EICRB = 0x03;    // ISC41=1, ISC40=1 -> 상승엣지시 인터럽트 작동(INT4)
+        time=TCNT1;
+        if(time>=100*8) bit_data[DHT_cnt++]='1';
+        else if(time<100*8) bit_data[DHT_cnt++]='0';     
+        toggle = 0;
+    }
+}
+
+void StartOut(void) //Atmega보드에서 dht11에 시작을 알리는 신호
+{ 
+    DDRE = 0xff;
+    PORTE = 0xff;
+    delay_ms(100); //Atmega보드에서 100ms간 High 신호 전송
+    PORTE = 0x00;
+    delay_ms(18);  //Atmega보드에서 18ms간 LOW 신호 전송
+    PORTE = 0xff;
+    delay_us(30);  //Atmega보드에서 30us간 HIGH 신호 전송
+    
+    EICRB = 0x03;  //ISC41=1,ISC40=1 -> 상승엣지시 인터럽트 작동(INT4): 데이터 바이트 구분
+    EIMSK = 0x10;  //외부 인터럽트4번 인에이블
+    DHT_cnt=0;
+}
+
+void DHT_Read(void) //DHT11 data 40byte를 read
+{
+    delay_ms(100);
+    StartOut();
+    while(StDone==0);
+    StDone = 0;
+        
+    humi = 0;
+    temp = 0;
+        
+    for(i=0;i<8;i++)
+    {
+        if(bit_data[i+1]=='1')
+            humi+=1<<(7-i);
+    }
+        
+    for(i=0;i<8;i++)
+    {
+        if(bit_data[i+17]=='1')
+            temp+=1<<(7-i);
+    }
+}
+
+void main(void)
+{
+    timer_init1();
+    SREG=0x80;
+     
+    while(1)
+    {
+        DHT_Read();
+    }
+}
+
