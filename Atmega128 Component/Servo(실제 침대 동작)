@@ -1,0 +1,23 @@
+while(1)
+        {    
+        pos-=2;
+        if(pos>=-70)
+        {
+        while(1)
+        {
+        
+        
+           for(pos=-68;pos<40;pos++)
+        { 
+        Servo_motor(pos);
+        delay_ms(8);
+        }
+
+         for(pos=39;pos>-68;pos--)
+        { 
+        Servo_motor(pos);
+        delay_ms(8);
+        }      
+        }
+        }
+        }
