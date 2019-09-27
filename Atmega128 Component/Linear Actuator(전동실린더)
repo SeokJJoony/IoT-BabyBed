@@ -1,0 +1,21 @@
+#include <mega128.h>
+#include <delay.h>
+    
+void main(void)
+{
+
+        DDRD = 0xff;
+        PORTD.0 = 1;    //PORTD.0,1: 멈춤(0,0) 동작(1,0)
+        PORTD.1 = 0;
+        PORTD.2 = 0;    //PORTD.2,3: 위로(1.0) 아래로(0,0)
+        PORTD.3 = 0;
+        DDRB = 0x80;
+        while(1)
+        { 
+             
+            PORTD.2 = 1;     //위로 5초간 올라감
+            delay_ms(5000);
+            PORTD.2 = 0;     //아래로 3초간 내려감
+            delay_ms(3000);      
+         }
+}
