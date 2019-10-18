@@ -1,0 +1,751 @@
+#include <mega128.h>
+#include <math.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <delay.h>
+//
+typedef unsigned char INT8;
+typedef unsigned int INT16;
+//
+#define SWING 0                 
+#define SEAT 1
+#define HEIGHT 2
+#define STATUS 3
+#define PARENT 4
+#define MODE 5 
+//
+#define MP3_VOLUME                    0x06 // 0..30
+#define MP3_PLAYBACK_SOURCE            0x09 // 0-U / 1-TF / 2-AUX / 3-SLEEP / 4-FLASH
+#define MP3_PLAYBACK_SOURCE_TF            1
+//
+#define MOTOR_PORT        PORTC       // 스테핑 모터 연결 포트
+#define MOTOR_PORT_DDR    DDRC        // 스테핑 모터 연결 포트의 DDR REG
+#define MOTOR_ENABLE    (MOTOR_PORT = MOTOR_PORT|0x80)
+#define MOTOR_DISABLE    (MOTOR_PORT = MOTOR_PORT&0x7f)
+#define MOTOR_STEP_M0    (MOTOR_PORT = (MOTOR_PORT&0xcf)|0x00) // 16step
+#define MOTOR_STEP_M1    (MOTOR_PORT = (MOTOR_PORT&0xcf)|0x10)
+#define MOTOR_STEP_M2    (MOTOR_PORT = (MOTOR_PORT&0xcf)|0x20)
+#define MOTOR_STEP_M3    (MOTOR_PORT = (MOTOR_PORT&0xcf)|0x30)
+#define MOTOR_LEFT_CLK    (MOTOR_PORT = MOTOR_PORT^0x01)
+#define MOTOR_RIGHT_CLK    (MOTOR_PORT = MOTOR_PORT^0x04)
+#define MOTOR_LEFT_CW    (MOTOR_PORT = MOTOR_PORT&0xfd)
+#define MOTOR_LEFT_CCW    (MOTOR_PORT = MOTOR_PORT|0x02)
+#define MOTOR_RIGHT_CW    (MOTOR_PORT = MOTOR_PORT&0xf7)
+#define MOTOR_RIGHT_CCW    (MOTOR_PORT = MOTOR_PORT|0x08)
+//
+#define nop2 {#asm("nop"); #asm("nop");}
+#define nop8 {nop2; nop2; nop2; nop2;}
+#define ws2812b PORTA.2
+#define data1    PORTA.7
+#define latch   PORTA.6
+#define clk     PORTA.5
+//
+INT8 default_buffer[10] = {0x7E, 0xFF, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xEF}; // Default Buffer
+volatile INT8 mp3_cmd_buf[10] = {0x7E, 0xFF, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xEF};
+volatile INT8 recv_buf[20] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
+//
+unsigned char ch;
+//
+volatile int gx = 0, gy = 0, gz = 0, ax = 0, ay = 0, az = 0;                 //자이로 센서에서 사용하는 변수
+volatile long x_aTmp1, y_aTmp1, z_aTmp1;
+volatile float x_aTmp2, y_aTmp2, z_aTmp2, x_aResult, y_aResult, z_aResult;
+volatile float x_gTmp1, y_gTmp1, x_gResult, y_gResult, z_gTmp1, z_gResult;
+float kp = 12.0f, ki = 1.0f;
+volatile float xTmp1, yTmp1, xTmp2, yTmp2, xIntTmp1, yIntTmp1    ;
+volatile float xFilterAngle = 0.0f, yFilterAngle = 0.0f;
+volatile int pitch = 0, roll = 0, yaw=0;
+bit gyr0_flag=0;    // APP에서 "0" 을 수신 받았다는 것을 확인 하기 위한 변수
+bit gyr1_flag=0;    // APP에서 "1" 을 수신 받았다는 것을 확인 하기 위한 변수
+int adc1,avr1,dif;   // 자이로 센서 값을 평균 내기 위한 변수
+int cnt=0;           // 자이로 센서 값을 평균 내기 위해 일정 시간 센서 값을 받아들일 시간을 만드는 변수
+long sum1=0;     // 자이로 센서 값을 평균 내기 위한 변수
+volatile int avr_pit=0, avr_rol=0, avr_yaw=0;
+unsigned char buffer[12];
+//
+char led[150][3]={0,};
+char i;  
+int shift;
+// 
+int play = 0,delay=0;
+int pos=0;
+int posMax=0;
+int SET[6] = {0,0,0,0,0,0};
+int EX[6] = {0,0,0,0,0,0}; 
+//             
+void SwingStop();
+void SwingFirst();
+void SwingSecond();
+void SwingThird();
+void USART_Init();
+void USART0_Transmit( char data );
+void USART1_Transmit( char data );
+INT16 MP3_checksum (void);
+void MP3_send_cmd (INT8 cmd, INT16 high_arg, INT16 low_arg);
+void dfplayer_init(void);
+void Init_Timer3A(void);
+void Servo_motor(int angle);
+void Print_Segment(int buf_seg[]);
+void PORT_Init(void);
+void Step_Motor();
+void height();
+void clk_out();
+void clr_led(int n);
+void byte_out(char d);
+void LED_OUT(int x,int y, int z);
+void SLEEP();
+void AWAKE();
+void PARENTS();
+//
+void getRawData();
+void getAcclDegree(void);
+void getGyroDegree(void);
+void compFilter(void);
+unsigned char MPU6050_read(unsigned char addr);
+void MPU6050_write(unsigned char addr, char data);
+
+void main(void)
+{
+    TWSR = 0x00;
+    TWBR = 12;   //SCK:400000Hz
+
+    MPU6050_write(0x6B,0x00);
+    MPU6050_write(0x6C,0x00);
+    
+    /*getRawData(); 
+    getAcclDegree();
+    getGyroDegree();
+    compFilter();*/ //자이로 센서 데이터 계산하는 함수
+    
+    USART_Init(); // 9600/8/n/1/n
+    dfplayer_init();
+    Init_Timer3A();   
+    PORT_Init(); 
+    MP3_send_cmd(0x12,0,1);
+    posMax=0;
+    SREG = 0x80; 
+     
+    while(1)
+    {
+        if(SET[SWING]==0)
+        {
+        SwingStop();
+        }
+        
+        if(SET[SWING]==1)
+        {       
+        SwingFirst();      
+        }
+                  
+        if(SET[SWING]==2)
+        {        
+        SwingSecond();
+        }
+        
+         if(SET[SWING]==3)
+        {        
+        SwingThird();
+        } 
+        
+        if(SET[MODE] == 1)
+        {
+          SLEEP();
+        }
+        
+        if(SET[MODE] == 2)
+        {
+          AWAKE();
+        } 
+        
+        if(SET[MODE] == 3)
+        {
+          PARENTS();
+        } 
+        height();
+        Step_Motor();
+     }
+}
+
+
+    
+void USART_Init( )
+{
+  UCSR1B = 0x98; // Receive interrupt
+  UCSR0B = 0x98;    //Receive(RX) 및 Transmit(TX) Enable
+  UCSR0C = UCSR1C = 0x06;    // UARTMode, 8 Bit Data, No Parity, 1 Stop Bit
+  UBRR0H = UBRR1H = 0;       //16Mhz, baud rate = 115200 (if 9600, 0)
+  UBRR0L = UBRR1L = 103;       //16Mhz, baud rate = 115200 (if 9600, 103)
+}
+
+
+void USART0_Transmit( char data )
+{
+    // Wait for empty transmit buffer
+    while ( !( UCSR0A & 0x20 ) );   // (1<<UDRE) 
+    
+    // Put data into buffer, sends the data
+    UDR0 = data;
+}
+
+
+void USART1_Transmit( char data )
+{
+    // Wait for empty transmit buffer
+    while ( !( UCSR1A & 0x20 ) );   // (1<<UDRE) 
+    
+    // Put data into buffer, sends the data
+    UDR1 = data;
+} 
+
+INT16 MP3_checksum (void)
+{
+    INT16 sum = 0;
+    INT8 i;
+    for (i=1; i<7; i++) {
+        sum += mp3_cmd_buf[i];
+    }
+    return -sum;
+}
+
+void MP3_send_cmd (INT8 cmd, INT16 high_arg, INT16 low_arg)
+{
+    INT8 i;
+    INT16 checksum;
+    mp3_cmd_buf[3] = cmd;
+    mp3_cmd_buf[5] = high_arg;
+    mp3_cmd_buf[6] = low_arg;
+    checksum = MP3_checksum();
+    mp3_cmd_buf[7] = (INT8) ((checksum >> 8) & 0x00FF);
+    mp3_cmd_buf[8] = (INT16) (checksum & 0x00FF);
+    for( i=0; i< 10; i++){
+        USART0_Transmit(mp3_cmd_buf[i]);
+        //putchar(mp3_cmd_buf[i]);
+        mp3_cmd_buf[i] = default_buffer[i];
+    }
+}
+
+void dfplayer_init(void)
+{
+    MP3_send_cmd(MP3_PLAYBACK_SOURCE,0,MP3_PLAYBACK_SOURCE_TF);
+    delay_ms(10);
+    MP3_send_cmd(MP3_VOLUME, 0,10); 
+    delay_ms(10);
+}
+
+void Init_Timer3A(void)
+{
+    TCCR3A = 0xAA;
+    TCCR3B = 0x1A;
+    
+    OCR3AH = 3000>>8;
+    OCR3AL = 3000&0xff;
+
+    ICR3H = 39999>>8;
+    ICR3L = 39999>>0xff;
+}
+
+void Servo_motor(int angle)
+{
+    OCR3AH = (angle*14+3640)>>8;
+    OCR3AL = (angle*14+3640)&0xFF;
+}
+   
+void SwingStop(void)      
+{
+        while(1)
+        {
+        if(pos <-13)
+        {
+        pos+= 2;
+            if(pos >-13)
+            {
+                pos = -13;
+                break;
+            }
+        }
+            
+        else if(pos >-13)
+        {
+            pos-=2;
+            if(pos<-13)
+            {
+                pos = -13;
+                break;
+            }
+        }
+        else
+        break;
+        }
+}
+    
+void SwingFirst(void)
+{
+        while(1)
+        {
+        if(pos >=-13)
+        {    
+        pos-=2;
+        if(pos>=-60)
+        {
+        while(1)
+        {
+           for(pos=-58;pos<30;pos++)
+            { 
+            Servo_motor(pos);
+            delay_ms(8);
+            }
+
+            for(pos=29;pos>-58;pos--)
+            { 
+            Servo_motor(pos);
+            delay_ms(8);
+            }
+            if(SET[SWING]!=1)
+            break;       
+        }
+        }
+        break;
+        }
+        else if(pos <=-13)
+        {
+        pos+=2;
+        if(pos<=-60)
+        {        
+        while(1)
+        {
+           for(pos=-58;pos<30;pos++)
+            { 
+            Servo_motor(pos);
+            delay_ms(8);
+            }
+
+            for(pos=29;pos>-58;pos--)
+            { 
+            Servo_motor(pos);
+            delay_ms(8);
+            }
+            if(SET[SWING]!=1)
+            break;       
+        }
+        }
+        break;
+        }
+        }
+}
+
+void SwingSecond(void)
+{
+      while(1)
+      {    
+        pos-=2;
+        if(pos>=-70)
+        {
+        while(1)
+        {
+            for(pos=-68;pos<40;pos++)
+            { 
+            Servo_motor(pos);
+            delay_ms(8);
+            }
+
+            for(pos=39;pos>-68;pos--)
+            { 
+            Servo_motor(pos);
+            delay_ms(8);
+            }      
+        }
+        }
+      }
+}
+
+void SwingThird(void)
+{
+     while(1)
+     {    
+        pos-=2;
+        if(pos>=-80)
+        {
+        while(1)
+        {    
+           for(pos=-78;pos<50;pos++)
+            { 
+            Servo_motor(pos);
+            delay_ms(8);
+            }
+
+            for(pos=49;pos>-78;pos--)
+            { 
+            Servo_motor(pos);
+            delay_ms(8);
+            }      
+        }
+        }
+     }  
+}
+
+void PORT_Init(void)
+{  
+    PORTE = 0x88;
+    MOTOR_PORT_DDR = 0xff;
+    DDRA = 0xff;
+    PORTA.0 = 0;
+    PORTA.1 = 0;
+    PORTA.2 = 0;
+    PORTA.3 = 0;            
+}
+
+
+void Step_Motor()
+{
+    int i;
+    int x = abs(EX[HEIGHT]- SET[HEIGHT]);
+   
+    MOTOR_STEP_M2;  
+    if( EX[SEAT] <  SET[SEAT])  MOTOR_LEFT_CCW; 
+    else if( EX[SEAT] >  SET[SEAT])  MOTOR_LEFT_CW;
+    MOTOR_ENABLE;
+     for(i=0;i<(x*3000);i++){
+           MOTOR_LEFT_CLK;
+           MOTOR_RIGHT_CLK; 
+           delay_ms(2);
+     }
+    MOTOR_DISABLE;
+    EX[SEAT] = SET[SEAT];
+    
+
+}
+void height()
+{
+     int x = abs(EX[HEIGHT]- SET[HEIGHT]);
+     if(EX[HEIGHT] < SET[HEIGHT]) PORTA.2 = 1;
+     else if(EX[HEIGHT] > SET[HEIGHT]) PORTA.2 = 0; 
+     PORTA.0 = 1;
+     delay_ms((x*3000));
+     PORTA.0 = 0;
+     EX[HEIGHT] = SET[HEIGHT];
+}
+
+void clk_out(){ clk=1; clk=0; }
+
+void clr_led(int n){
+    int i;
+    for(data1=0,i=0;i<n;i++){ clk_out(); clk_out(); clk_out(); }
+    latch=1; latch=0;
+}  
+
+void byte_out(char d){
+    char i;
+    for(i=0;i<8;i++){
+        if(d&0x80){ ws2812b=1; nop8; ws2812b=0; } 
+        else      { ws2812b=1; nop2; ws2812b=0; }
+        d<<=1; 
+    }
+}
+
+void LED_OUT(int x,int y, int z)
+{    
+    byte_out(y);        
+    byte_out(x);        
+    byte_out(z);
+}
+
+void SLEEP()
+{
+    height();
+    Step_Motor();
+    SET[SWING] = 3;
+    while(1)
+    {           
+        if(SET[SWING]==0)
+        {
+          SwingStop();
+          USART1_Transmit('C');
+          MP3_send_cmd(0x0D,0,0);    
+          play = 0; 
+          delay_ms(5000);
+           
+          if(SET[STATUS] == 2)
+          {
+             SET[MODE] = 2;
+             USART1_Transmit('A'); 
+             break;
+          }
+          else if(SET[STATUS] == 1) SET[SWING] = 3;    
+        }
+        
+        if(SET[SWING]==1)
+        {       
+          SwingFirst();      
+        }
+                  
+        if(SET[SWING]==2)
+        {        
+          SwingSecond();
+        }
+        
+         if(SET[SWING]==3)
+        {        
+          SwingThird();
+          SET[STATUS] = 0;
+        } 
+        
+        EX[STATUS] = SET[STATUS];    
+    }
+}
+
+void AWAKE()
+{
+   SET[STATUS] = 0;
+   while(1)
+   {
+     USART1_Transmit('C');
+     delay_ms(5000);
+     EX[STATUS] = SET[STATUS];
+     if(EX[STATUS] == 1)
+     {
+        SET[MODE] = 3;
+        SET[STATUS] = 0;
+        break;
+     }
+   }
+
+}
+
+void PARENTS()
+{
+   SET[PARENT] = 0 ;
+   while(1)
+   {
+     USART1_Transmit('D');
+     delay_ms(5000);
+     EX[PARENT] = SET[PARENT];
+     if(EX[PARENT]== 1)
+     {
+        SET[MODE] = 0;
+        SET[PARENT] = 0;
+        SET[SEAT] = 2;
+        SET[HEIGHT] = 3;
+        break;
+     }
+   }
+}
+
+
+unsigned char MPU6050_read(unsigned char addr)
+{
+    unsigned char dat;
+    TWCR = 0xA4;// ((1<<TWINT)|(1<<TWSTA)|(1<<TWEN)) -> TWEN으로 TWI 허가 / TWSTA는 마스터로서의 동작, 버스사용이 가능하면 START 조건 출력 / TWINT TW인터럽트 
+    while(((TWCR & 0x80) == 0x00 || ((TWSR & 0xF8) != 0x08)));// TWCR레지스터의 TWINT가 0 이거나 TWSR의 TWS3비트가 1이 아니라면 계속 반복
+    TWDR = 0xD0;
+    TWCR = 0x84;// ((1<<TWINT)|(1<<TWEN)) -> TWEN으로 TWI 허가 / TWINT TW인터럽트
+    while(((TWCR & 0x80) == 0x00 || ((TWSR & 0xF8) != 0x18)));// TWCR레지스터의 TWINT가 0 이거나
+    TWDR = addr;
+    TWCR = 0x84;// ((1<<TWINT)|(1<<TWEN)) -> TWEN으로 TWI 허가 / TWINT TW인터럽트
+    while(((TWCR & 0x80) == 0x00 || ((TWSR & 0xF8) != 0x28)));// TWCR레지스터의 TWINT가 0 이거나
+    TWCR = 0xA4;// ((1<<TWINT)|(1<<TWSTA)|(1<<TWEN)) -> TWEN으로 TWI 허가 / TWSTA는 마스터로서의 동작, 버스사용이 가능하면 START 조건 출력 / TWINT TW인터럽트    
+    //-------------------------------------------------------------
+    while(((TWCR & 0x80) == 0x00 || ((TWSR & 0xF8) != 0x10)));// TWCR레지스터의 TWINT가 0 이거나
+    TWDR = 0xD1;
+    TWCR = 0x84;// ((1<<TWINT)|(1<<TWEN)) -> TWEN으로 TWI 허가 / TWINT TW인터럽트
+    while(((TWCR & 0x80) == 0x00 || ((TWSR & 0xF8) != 0x40)));// TWCR레지스터의 TWINT가 0 이거나 
+    TWCR = 0x84;// ((1<<TWINT)|(1<<TWEN)) -> TWEN으로 TWI 허가 / TWINT TW인터럽트 
+    while(((TWCR & 0x80) == 0x00 || ((TWSR & 0xF8) != 0x58)));// TWCR레지스터의 TWINT가 0 이거나
+    dat = TWDR;
+    TWCR = 0x94;// ((1<<TWINT)|(1<<TWSTA)|(1<<TWEN)) -> TWEN으로 TWI 허가 / TWSTO는 마스터에선 TWI STOP, 슬레이브에선 SCL과 SDA 신호선을 High-Z상태로 하여 에러상태 해제 / TWINT TW인터럽트  
+    return dat;
+}
+// 자이로 센서
+void MPU6050_write(unsigned char addr, char data)
+{
+    TWCR = 0xA4;// ((1<<TWINT)|(1<<TWSTA)|(1<<TWEN)) -> TWEN으로 TWI 허가 / TWSTA는 마스터로서의 동작, 버스사용이 가능하면 START 조건 출력 / TWINT TW인터럽트 
+    while(((TWCR & 0x80) == 0x00 || ((TWSR & 0xF8) != 0x08)));// TWCR레지스터의 TWINT가 0 이거나
+    TWDR = 0xD0;
+    TWCR = 0x84;// ((1<<TWINT)|(1<<TWEN)) -> TWEN으로 TWI 허가 / TWINT TW인터럽트 
+    while(((TWCR & 0x80) == 0x00 || ((TWSR & 0xF8) != 0x18)));// TWCR레지스터의 TWINT가 0 이거나
+    TWDR = addr; // addr = 0x43
+    TWCR = 0x84;// ((1<<TWINT)|(1<<TWEN)) -> TWEN으로 TWI 허가 / TWINT TW인터럽트
+    while(((TWCR & 0x80) == 0x00 || ((TWSR & 0xF8) != 0x28)));// TWCR레지스터의 TWINT가 0 이거나    
+    //-------------------------------------------------------------  
+    TWDR = data;
+    TWCR = 0x84;// ((1<<TWINT)|(1<<TWEN)) -> TWEN으로 TWI 허가 / TWINT TW인터럽트
+    while(((TWCR & 0x80) == 0x00 || ((TWSR & 0xF8) != 0x28)));// TWCR레지스터의 TWINT가 0 이거나
+    TWCR = 0x94;// ((1<<TWINT)|(1<<TWSTA)|(1<<TWEN)) -> TWEN으로 TWI 허가 / TWSTO는 마스터에선 TWI STOP, 슬레이브에선 SCL과 SDA 신호선을 High-Z상태로 하여 에러상태 해제 / TWINT TW인터럽트
+    delay_us(50);
+}
+// 자이로 센서
+void getRawData()
+{
+    buffer[0] = MPU6050_read(0x3B);// ax-H
+    buffer[1] = MPU6050_read(0x3C);// ax-L
+    buffer[2] = MPU6050_read(0x3D);// ay-H
+    buffer[3] = MPU6050_read(0x3E);// ay-L
+    buffer[4] = MPU6050_read(0x3F);// az-H
+    buffer[5] = MPU6050_read(0x40);// ax-L 
+    
+    buffer[6] = MPU6050_read(0x43);// gx-H
+    buffer[7] = MPU6050_read(0x44);// gx-L
+    buffer[8] = MPU6050_read(0x45);// gy-H
+    buffer[9] = MPU6050_read(0x46);// gy-L
+    buffer[10] = MPU6050_read(0x47);//gz-H
+    buffer[11] = MPU6050_read(0x48);//gz-L  
+    
+    ax = (int)buffer[0] << 8 | (int)buffer[1];
+    ay = (int)buffer[2] << 8 | (int)buffer[3];
+    az = (int)buffer[4] << 8 | (int)buffer[5];
+    gx = (int)buffer[6] << 8 | (int)buffer[7];
+    gy = (int)buffer[8] << 8 | (int)buffer[9];
+    gz = (int)buffer[10] << 8 | (int)buffer[11];
+}
+// 자이로 센서
+void getAcclDegree(void)// 가속도 측정값들을 라디안 단위로
+{
+    x_aTmp1=((long)ay*(long)ay)+((long)az*(long)az);
+    y_aTmp1=((long)ax*(long)ax)+((long)az*(long)az);
+    z_aTmp1=((long)ay*(long)ay)+((long)az*(long)az);
+    
+    x_aTmp2=sqrt((float)x_aTmp1);
+    y_aTmp2=sqrt((float)y_aTmp1);
+    z_aTmp2=sqrt((float)z_aTmp1);
+    
+    x_aResult=atan((float)ax/x_aTmp2);
+    y_aResult=atan((float)ay/y_aTmp2);
+    z_aResult=atan(z_aTmp2/(float)az);//가속도 결과값 
+}
+// 자이로 센서 
+void getGyroDegree(void)// 자이로 측정값들을 라디안 단위로
+{
+    x_gTmp1=(float)gx/65536;
+    y_gTmp1=(float)gy/65536;
+    z_gTmp1=(float)gz/65536;
+    
+    x_gTmp1=x_gTmp1*1.8;
+    y_gTmp1=y_gTmp1*1.8;
+    z_gTmp1=z_gTmp1*1.8;
+    
+    x_gResult=x_gTmp1;   //각속도 결과값
+    y_gResult=y_gTmp1;
+    z_gResult=z_gTmp1;
+}
+// 자이로 센서
+void compFilter(void) // 불안정한 센서 값을 필터링 해주는 상보 필터
+{
+    xTmp1=(-y_aResult)+(float)xFilterAngle; // 현재 각도와, 최정 얻은 값의 차이를 얻음 (ERROR 값)
+    xIntTmp1=(float)xIntTmp1+(xTmp1*0.01);  // ERROR 값을 적분함
+    xTmp2=(-kp*xTmp1)+(-ki*(float)xIntTmp1)+x_gResult; 
+    xFilterAngle=xFilterAngle+(xTmp2*0.01);  // 각속도 값의 적분
+    pitch=(int)(xFilterAngle*180/PI);        // 적분된 값이 라디안 이므로 각도로 바꾸어 줌
+    
+    yTmp1=(-x_aResult)+(float)yFilterAngle;
+    yIntTmp1=(float)yIntTmp1+(yTmp1*0.01);
+    yTmp2=(-kp*yTmp1)+(-ki*(float)yIntTmp1)+y_gResult;
+    yFilterAngle+=yTmp2*0.01;
+    roll=(int)(yFilterAngle*180/PI);
+    yaw=(int)(0.976*(yaw+((gz/131.)*0.001)))+(0.024*(atan2(ax, ay)*180/PI));
+}
+
+interrupt [USART1_RXC] void usart1_rx_isr(void)
+{
+              ch = UDR1;              
+              switch(ch){
+                 case '#' :            
+                    MP3_send_cmd(0x01,0,0);   //다음 
+                    break;
+                 case '!' :
+                    if(play==0)
+                    {            
+                      MP3_send_cmd(0x0E,0,0);    
+                      play = 1;
+                    }
+                    else
+                    {  
+                      MP3_send_cmd(0x0D,0,0);    
+                      play = 0;
+                    }
+                    break;
+                 case '+' :            
+                    MP3_send_cmd(0x04,0,0);
+                    break;
+                 case '-' :               
+                    MP3_send_cmd(0x05,0,0);
+                    break;
+                 case 'D' :            
+                    SET[SWING] = 0;   
+                    break;
+                 case 'E' :
+                    SET[SWING] = 1;
+                    break;
+                 case 'F' :            
+                    SET[SWING] = 2;
+                    break;
+                 case 'G' :               
+                    SET[SWING] = 3;
+                    break;
+                 case 'L' :              
+                    SET[SEAT] = 0; // 등받이0단계
+                    break;
+                 case 'M' :
+                    SET[SEAT] = 1; // 등받이1단계
+                    break;
+                 case 'N' :               
+                    SET[SEAT] = 2; //등받이 2단계
+                    break;
+                 case 'O' :
+                    SET[HEIGHT] = 0;
+                    break;
+                  case 'P' :
+                    SET[HEIGHT] = 1;
+                    break;
+                   case 'Q' :
+                    SET[HEIGHT] = 2;
+                    break;
+                  case 'R' :
+                    SET[HEIGHT] = 3;
+                    break;
+                  case 'T':
+                     SET[SWING] = 0;
+                     SET[SEAT] = 0;
+                     SET[HEIGHT] = 0;
+                     SET[STATUS] = 1;
+                     SET[PARENT] = 0;
+                     SET[MODE] = 0;
+                     break;
+                  case 'A':
+                     SET[STATUS] = 1;
+                     break;
+                  case 'B':
+                     SET[STATUS] = 2;
+                     break;
+                  case 'V':
+                     SET[PARENT] = 1;
+                     break;      
+                 case '0' :
+                 case '1' :
+                 case '2' :
+                 case '3' :
+                 case '4' :
+                 case '5' :
+                 case '6' :
+                 case '7' :
+                 case '8' :
+                 case '9' :
+                     MP3_send_cmd(0x12,0,ch - 0x2F);
+                 default  :
+                    break;
+              }
+     
+} 
+
+
+interrupt [USART0_RXC] void usart0_rx_isr(void)
+{          
+              recv_buf[i] = UDR0;
+              i++;     
+              
+              if(i == 20)
+              {   
+                i = 0;
+               USART1_Transmit('S');
+               if(SET[MODE]==1) SET[SWING]--;
+                               
+              }                       
+}
