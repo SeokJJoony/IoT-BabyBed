@@ -37,9 +37,9 @@ typedef unsigned int INT16;
 #define nop2 {#asm("nop"); #asm("nop");}
 #define nop8 {nop2; nop2; nop2; nop2;}
 #define ws2812b PORTA.2
-#define data1    PORTA.7
+/*#define data1    PORTA.7
 #define latch   PORTA.6
-#define clk     PORTA.5
+#define clk     PORTA.5*/
 //
 INT8 default_buffer[10] = {0x7E, 0xFF, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xEF}; // Default Buffer
 volatile INT8 mp3_cmd_buf[10] = {0x7E, 0xFF, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xEF};
@@ -63,11 +63,11 @@ long sum1=0;     // 자이로 센서 값을 평균 내기 위한 변수
 volatile int avr_pit=0, avr_rol=0, avr_yaw=0;
 unsigned char buffer[12];
 //
-char led[150][3]={0,};
-char i;  
-int shift;
+//char led[150][3]={0,};
+int i = 0;  
+//int shift;
 // 
-int play = 0,delay=0;
+int play = 0;
 int pos=0;
 int posMax=0;
 int SET[6] = {0,0,0,0,0,0};
@@ -82,15 +82,15 @@ void USART0_Transmit( char data );
 void USART1_Transmit( char data );
 INT16 MP3_checksum (void);
 void MP3_send_cmd (INT8 cmd, INT16 high_arg, INT16 low_arg);
+void play_pause();
 void dfplayer_init(void);
 void Init_Timer3A(void);
 void Servo_motor(int angle);
-void Print_Segment(int buf_seg[]);
 void PORT_Init(void);
 void Step_Motor();
 void height();
-void clk_out();
-void clr_led(int n);
+//void clk_out();
+//void clr_led(int n);
 void byte_out(char d);
 void LED_OUT(int x,int y, int z);
 void SLEEP();
@@ -103,7 +103,7 @@ void getGyroDegree(void);
 void compFilter(void);
 unsigned char MPU6050_read(unsigned char addr);
 void MPU6050_write(unsigned char addr, char data);
-
+//
 void main(void)
 {
     TWSR = 0x00;
@@ -112,14 +112,22 @@ void main(void)
     MPU6050_write(0x6B,0x00);
     MPU6050_write(0x6C,0x00);
     
-    /*getRawData(); 
+    getRawData(); 
     getAcclDegree();
     getGyroDegree();
-    compFilter();*/ //자이로 센서 데이터 계산하는 함수
+    compFilter();
+    for(i=0;i<10;i++)  // i가 10이 될 때 까지 roll 값을 sum1 에 저장
+    { 
+    delay_ms(1); 
+    sum1+=roll; 
+    }            
+    avr1=sum1/10;
+
     
     USART_Init(); // 9600/8/n/1/n
     dfplayer_init();
-    Init_Timer3A();   
+    Init_Timer1();   //자이로 측정 시간 세는 용도
+    Init_Timer3();   
     PORT_Init(); 
     MP3_send_cmd(0x12,0,1);
     posMax=0;
@@ -127,46 +135,90 @@ void main(void)
      
     while(1)
     {
-        if(SET[SWING]==0)
+        height();
+        Step_Motor();
+        
+        if((dif<-3)||(dif>3))  // 평균과의 차이가 -5 이하 & 5 이상 이 아니면 15번동안 count 하면서 값을 추출
         {
-        SwingStop();
-        }
-        
-        if(SET[SWING]==1)
-        {       
-        SwingFirst();      
-        }
-                  
-        if(SET[SWING]==2)
-        {        
-        SwingSecond();
-        }
-        
-         if(SET[SWING]==3)
-        {        
-        SwingThird();
+            Sleepcnt =0;
+            if(gyr1_flag==0)
+            {      
+            USART1_Transmit( 'B' );
+            gyr0_flag=0;
+            gyr1_flag=1;                        
+            } 
         } 
-        
+        else
+        { 
+            if(Sleepcnt<15)     // 평균과의 차이가 -5 이하 & 5 이상 이 아니면 15번동안 count 하면서 값을 추출
+            {
+            Sleepcnt++;   
+            }
+            else if(gyr0_flag==0)    // 15번동안 값을 비교했는데 움직임이 감지가 안되면 수면으로 간주
+            {                  
+            USART1_Transmit( 'A' );
+            gyr0_flag=1;
+            gyr1_flag=0;  
+            }          
+        }
+            
         if(SET[MODE] == 1)
         {
           SLEEP();
         }
         
-        if(SET[MODE] == 2)
+        else if(SET[MODE] == 2)
         {
           AWAKE();
         } 
         
-        if(SET[MODE] == 3)
+        else if(SET[MODE] == 3)
         {
           PARENTS();
         } 
-        height();
-        Step_Motor();
+    
+        else if(SET[MODE] == 0)
+        {
+             if(SET[SWING]==0)
+             {
+               SwingStop();
+             }
+        
+             if(SET[SWING]==1)
+             {       
+               SwingFirst();      
+             }
+                  
+             if(SET[SWING]==2)
+             {        
+               SwingSecond();
+             }
+        
+             if(SET[SWING]==3)
+             {        
+               SwingThird();
+             } 
+        }
      }
 }
 
+void Init_Timer1()
+{
+    TCCR1B = 0b00000100; //분주비를 clk / 256으로 설정하였습니다. (시간을 구하는 방법 또한 아래서 자세히!!)
+ 
+    TIMSK = (1<<TOIE1); //타이머/카운터1 의 오버플로우 개별 인터럽트를 허용합니다.
+ 
+    TCNT1H = 0xFB; //1초의 오버플로우를 만들기 위한 타이머/카운터1의 초기값을 정해줍니다.
+    TCNT1L = 0x1D;
+}
 
+interrupt [TIM1_OVF] void timer0_ovf_isr (void) //핵심 인터럽트 걸릴 시 이곳으로 점프!
+{
+    count++;
+ 
+    TCNT1H = 0xFB; //1초의 오버플로우를 만들기 위한 타이머/카운터1의 초기값을 정해줍니다.
+    TCNT1L = 0x1D;
+}
     
 void USART_Init( )
 {
@@ -224,6 +276,20 @@ void MP3_send_cmd (INT8 cmd, INT16 high_arg, INT16 low_arg)
     }
 }
 
+void play_pause()
+{
+    if(play==0)
+    {            
+      MP3_send_cmd(0x0E,0,0);    
+      play = 1;
+    }
+    else
+    {  
+       MP3_send_cmd(0x0D,0,0);    
+       play = 0;
+    }
+}
+
 void dfplayer_init(void)
 {
     MP3_send_cmd(MP3_PLAYBACK_SOURCE,0,MP3_PLAYBACK_SOURCE_TF);
@@ -232,7 +298,7 @@ void dfplayer_init(void)
     delay_ms(10);
 }
 
-void Init_Timer3A(void)
+void Init_Timer3(void)
 {
     TCCR3A = 0xAA;
     TCCR3B = 0x1A;
@@ -425,13 +491,13 @@ void height()
      EX[HEIGHT] = SET[HEIGHT];
 }
 
-void clk_out(){ clk=1; clk=0; }
+/*void clk_out(){ clk=1; clk=0; }
 
 void clr_led(int n){
     int i;
     for(data1=0,i=0;i<n;i++){ clk_out(); clk_out(); clk_out(); }
     latch=1; latch=0;
-}  
+} */ 
 
 void byte_out(char d){
     char i;
@@ -451,6 +517,7 @@ void LED_OUT(int x,int y, int z)
 
 void SLEEP()
 {
+    LED_OUT(50,50,50);
     height();
     Step_Motor();
     SET[SWING] = 3;
@@ -459,18 +526,57 @@ void SLEEP()
         if(SET[SWING]==0)
         {
           SwingStop();
-          USART1_Transmit('C');
-          MP3_send_cmd(0x0D,0,0);    
-          play = 0; 
-          delay_ms(5000);
+          play_pause();
+          while(1)   //자이로 함수로 넘기기
+          {                    
+            getRawData();              
+            getAcclDegree();
+            getGyroDegree();            
+            compFilter(); 
+            adc1=roll;
+            sum1-=avr1;  
+            sum1+=adc1;           // 새로운 값으로 바꿔서 더한 후
+            avr1=sum1/10;         // 평균을 다시 계산
+            dif=adc1-avr1;          // 평균 값과 제일 최근에 들어온 값의 차이를 추출    
            
-          if(SET[STATUS] == 2)
+            if((dif<-3)||(dif>3))  // 평균과의 차이가 -3 이하 & 3 이상 이 아니면 15번동안 count 하면서 값을 추출(둔감하게 조정했음)
+            {
+               Sleepcnt =0;
+            if(gyr1_flag==0)       //연속으로 중복된 명령어 전송을 방지
+            {      
+            USART1_Transmit( 'B' );
+            gyr0_flag=0;           //플래그 OFF(중복 전송 방지)
+            gyr1_flag=1;
+            SET[STATUS] = 0;       //깨어있음을 나타내는 상태플래그
+            break;                         
+            } 
+            } 
+            else
+            { 
+            if(Sleepcnt<15)     
+            {
+            Sleepcnt++;   
+            }
+            else if(gyr0_flag==0)    // 15번동안 값을 비교했는데 움직임이 감지가 안되면 수면으로 간주
+            {                  
+            USART1_Transmit( 'A' );
+            gyr0_flag=1;
+            gyr1_flag=0;
+            SET[STATUS] = 1;         //자는것을 나타내는 상태플래그
+            break;  
+            }          
+            }
+          }           
+          if(SET[STATUS] == 1)
           {
-             SET[MODE] = 2;
-             USART1_Transmit('A'); 
+             SET[MODE] = 2; 
              break;
           }
-          else if(SET[STATUS] == 1) SET[SWING] = 3;    
+          else if(SET[STATUS] == 0) 
+          {
+            SET[SWING] = 3;
+            play_pause();
+          }  
         }
         
         if(SET[SWING]==1)
@@ -486,7 +592,6 @@ void SLEEP()
          if(SET[SWING]==3)
         {        
           SwingThird();
-          SET[STATUS] = 0;
         } 
         
         EX[STATUS] = SET[STATUS];    
@@ -495,16 +600,14 @@ void SLEEP()
 
 void AWAKE()
 {
-   SET[STATUS] = 0;
+   LED_OUT(0,0,0);
    while(1)
    {
-     USART1_Transmit('C');
-     delay_ms(5000);
-     EX[STATUS] = SET[STATUS];
-     if(EX[STATUS] == 1)
+     //자이로센서 들어갈부분
+     if(SET[STATUS] == 0)
      {
-        SET[MODE] = 3;
-        SET[STATUS] = 0;
+        SET[MODE] = 3;  
+        USART1_Transmit('B');
         break;
      }
    }
@@ -513,21 +616,23 @@ void AWAKE()
 
 void PARENTS()
 {
-   SET[PARENT] = 0 ;
+   LED_OUT(50,50,50);
    while(1)
    {
-     USART1_Transmit('D');
-     delay_ms(5000);
-     EX[PARENT] = SET[PARENT];
+     //초음파 들어갈 부분
+     EX[PARENT] = SET[PARENT]; 
      if(EX[PARENT]== 1)
      {
         SET[MODE] = 0;
         SET[PARENT] = 0;
         SET[SEAT] = 2;
         SET[HEIGHT] = 3;
+        LED_OUT(0,0,0);
         break;
      }
    }
+
+
 }
 
 
@@ -651,16 +756,7 @@ interrupt [USART1_RXC] void usart1_rx_isr(void)
                     MP3_send_cmd(0x01,0,0);   //다음 
                     break;
                  case '!' :
-                    if(play==0)
-                    {            
-                      MP3_send_cmd(0x0E,0,0);    
-                      play = 1;
-                    }
-                    else
-                    {  
-                      MP3_send_cmd(0x0D,0,0);    
-                      play = 0;
-                    }
+                    play_pause();
                     break;
                  case '+' :            
                     MP3_send_cmd(0x04,0,0);
@@ -705,19 +801,18 @@ interrupt [USART1_RXC] void usart1_rx_isr(void)
                      SET[SWING] = 0;
                      SET[SEAT] = 0;
                      SET[HEIGHT] = 0;
-                     SET[STATUS] = 1;
+                     SET[STATUS] = 0;
+                     SET[PARENT] = 0;
+                     SET[MODE] = 1;
+                     break;
+                 case 'X' :
+                     SET[SWING] = 0;
+                     SET[SEAT] = 0;
+                     SET[HEIGHT] = 0;
+                     SET[STATUS] = 0;
                      SET[PARENT] = 0;
                      SET[MODE] = 0;
-                     break;
-                  case 'A':
-                     SET[STATUS] = 1;
-                     break;
-                  case 'B':
-                     SET[STATUS] = 2;
-                     break;
-                  case 'V':
-                     SET[PARENT] = 1;
-                     break;      
+                     break;   
                  case '0' :
                  case '1' :
                  case '2' :
@@ -735,7 +830,6 @@ interrupt [USART1_RXC] void usart1_rx_isr(void)
      
 } 
 
-
 interrupt [USART0_RXC] void usart0_rx_isr(void)
 {          
               recv_buf[i] = UDR0;
@@ -749,3 +843,4 @@ interrupt [USART0_RXC] void usart0_rx_isr(void)
                                
               }                       
 }
+
